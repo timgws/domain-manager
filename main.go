@@ -68,6 +68,7 @@ func main() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(infoCmd)
 	rootCmd.AddCommand(deleteCmd)
+	rootCmd.AddCommand(installDepsCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
@@ -258,10 +259,3 @@ func setupDomain(db *storm.DB, domain string, force bool) error {
 	return nil
 }
 
-func reloadNginx() error {
-	cmd := exec.Command("nginx", "-s", "reload")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	fmt.Println("🔄 Reloading nginx...")
-	return cmd.Run()
-}

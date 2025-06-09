@@ -1,0 +1,23 @@
+FROM php:{{ .PHPVersion }}-fpm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    libzip-dev zip unzip libpng-dev libjpeg-dev libfreetype6-dev \
+    libonig-dev libxml2-dev libcurl4-openssl-dev \
+    && docker-php-ext-install pdo pdo_mysql zip mbstring gd opcache
+
+# Set working directory inside the container
+WORKDIR /var/www/html
+
+# Security best practices
+RUN useradd -u 1000 -M -s /usr/sbin/nologin www-data
+
+# Clean up after install
+RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Expose FPM port
+EXPOSE 9000
+
+# Use a non-root user (optional if volumes are already root-owned)
+USER www-data
+

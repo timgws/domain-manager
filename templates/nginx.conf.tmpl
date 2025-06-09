@@ -1,0 +1,20 @@
+server {
+    listen 80;
+    server_name {{ .Domain }};
+
+    root /data/websites/{{ .Domain }};
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \.php$ {
+        include fastcgi_params;
+	fastcgi_pass 127.0.0.1:{{ add 9000 .ID }};
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+
+    access_log /var/log/nginx/{{ .DomainDashed }}.access.log;
+    error_log /var/log/nginx/{{ .DomainDashed }}.error.log;
+}

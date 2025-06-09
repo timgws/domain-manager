@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  php:
+    build:
+      context: ../
+      dockerfile: php-fpm.Dockerfile
+    container_name: php-{{ .DomainDashed }}
+    volumes:
+      - /data/websites/{{ .Domain }}:/var/www/html:ro
+    ports:
+      - "{{ add 9000 .ID }}:9000"
+    networks:
+      - wp_net
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/tmp
+
+networks:
+  wp_net:
+    external: true

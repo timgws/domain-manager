@@ -1,0 +1,10 @@
+database_path: "/var/lib/domain-manager/domains.db"
+base_output_dir: "/opt/domain-manager/docker"
+template_dir: "./templates"
+default_php_version: "8.2"
+default_runtime: "podman"
+
+mysql:
+  host: "127.0.0.1:3306"
+  root_user: "root"
+  root_password: "MyMySQLP433w0rd!IsNotThis"

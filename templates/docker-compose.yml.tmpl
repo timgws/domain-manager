@@ -2,7 +2,7 @@ version: '3.8'
 services:
   php:
     build:
-      context: ../
+      context: ./
       dockerfile: php-fpm.Dockerfile
     container_name: php-{{ .DomainDashed }}
     volumes:

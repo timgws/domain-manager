@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /var/www/html
 
 # Security best practices
-RUN useradd -u 1000 -M -s /usr/sbin/nologin www-data
+# RUN useradd -u 1000 -M -s /usr/sbin/nologin www-data
 
 # Clean up after install
 RUN apt-get clean && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,5 @@
+
+Match Group sftpusers
+    ChrootDirectory /jailhomes/%u
+    ForceCommand internal-sftp
+

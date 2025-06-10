@@ -30,9 +30,13 @@ type DomainData struct {
 	Username     string
 }
 
+var websitesRoot string
+var jailhomesRoot string
+
 var skipUp bool
 var skipReload bool
 var runtime string
+var importPath string
 var force bool
 
 var rootCmd = &cobra.Command{
@@ -63,12 +67,23 @@ func main() {
 	addCmd.Flags().BoolVar(&skipUp, "no-up", false, "Skip container startup")
 	addCmd.Flags().BoolVar(&skipReload, "no-reload", false, "Skip nginx reload")
 
+	bootstrapCmd.Flags().BoolVar(&forceBootstrap, "force", false, "overwrite contents if target directory is not empty")
+
+	mysqlCreateCmd.Flags().StringVar(&importPath, "import", "", "Optional path to SQL file to import")
+
+	mysqlListCmd.Flags().Bool("stats", false, "Show size statistics for databases")
+	mysqlCmd.AddCommand(mysqlCreateCmd)
+	mysqlCmd.AddCommand(mysqlListCmd)
+	mysqlCmd.AddCommand(mysqlDeleteCmd)
+	rootCmd.AddCommand(mysqlCmd)
+
 	rootCmd.AddCommand(addCmd)
-	rootCmd.AddCommand(createDBCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(infoCmd)
 	rootCmd.AddCommand(deleteCmd)
+	rootCmd.AddCommand(enableSSL)
 	rootCmd.AddCommand(installDepsCmd)
+	rootCmd.AddCommand(bootstrapCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
@@ -83,6 +98,13 @@ func initConfig() {
 	if err := viper.ReadInConfig(); err != nil {
 		log.Fatalf("Error reading config: %v", err)
 	}
+
+	websitesRoot = viper.GetString("websites_root")
+	jailhomesRoot = viper.GetString("jailhomes_root")
+
+	if websitesRoot == "" || jailhomesRoot == "" {
+		log.Fatal("paths.websites_root and paths.jailhomes_root must be configured")
+	}
 }
 
 func initDB() *storm.DB {
@@ -92,6 +114,17 @@ func initDB() *storm.DB {
 		log.Fatalf("Failed to open Storm DB: %v", err)
 	}
 	return db
+}
+
+
+func GetByName(name string) (*DomainData, error) {
+	db := initDB()
+	var d DomainData
+	err := db.One("Name", name, &d)
+	if err != nil {
+		return nil, fmt.Errorf("domain %s not found: %w", name, err)
+	}
+	return &d, nil
 }
 
 func setRuntime() {
@@ -112,10 +145,10 @@ func runComposeUp(domainDir, runtime string, force bool) error {
 
 	if runtime == "docker" {
 		downCmd = exec.Command("docker-compose", "down")
-		upCmd = exec.Command("docker-compose", "up", "-d")
+		upCmd = exec.Command("docker-compose", "up", "--build", "-d")
 	} else {
 		downCmd = exec.Command("podman-compose", "down")
-		upCmd = exec.Command("podman-compose", "up", "-d")
+		upCmd = exec.Command("podman-compose", "up", "--build", "-d")
 	}
 
 	downCmd.Dir = domainDir
@@ -150,8 +183,20 @@ func userExists(username string) bool {
 }
 
 func createUnixUser(username string) error {
-	cmd := exec.Command("useradd", "-m", "-s", "/usr/sbin/nologin", username)
-	return cmd.Run()
+	// Ensure the sftpusers group exists
+	if err := exec.Command("getent", "group", "sftpusers").Run(); err != nil {
+		if err := exec.Command("groupadd", "sftpusers").Run(); err != nil {
+			return fmt.Errorf("failed to create sftpusers group: %w", err)
+		}
+	}
+
+	// Create user and add to sftpusers group
+	cmd := exec.Command("useradd", "-m", "-s", "/usr/sbin/nologin", "-G", "sftpusers", username)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to create user %s: %w", username, err)
+	}
+
+	return nil
 }
 
 func renderTemplateWithFuncs(tmplPath string, data DomainData) (string, error) {
@@ -197,6 +242,19 @@ func setupDomain(db *storm.DB, domain string, force bool) error {
 		}
 	}
 
+	if existing.ID == 0 {
+		record := DomainRecord{
+			Domain:    domain,
+			Username:  username,
+			CreatedAt: time.Now(),
+		}
+		if err := db.Save(&record); err != nil {
+			return fmt.Errorf("failed to save initial domain record: %w", err)
+		}
+		existing = record
+	}
+
+
 	outputDir := filepath.Join(viper.GetString("base_output_dir"), domain)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return err
@@ -222,6 +280,24 @@ func setupDomain(db *storm.DB, domain string, force bool) error {
 			return err
 		}
 		fmt.Println("Generated:", dest)
+	}
+
+	domainPath := filepath.Join(websitesRoot, domain)
+	jailLink := filepath.Join(jailhomesRoot, username)
+
+	if err := os.MkdirAll(domainPath, 0755); err != nil {
+		log.Fatalf("Failed to create domain dir: %v", err)
+	}
+
+	if err := os.MkdirAll(jailhomesRoot, 0755); err != nil {
+		log.Fatalf("Failed to create jailhomes root dir: %v", err)
+	}
+
+
+	if _, err := os.Lstat(jailLink); os.IsNotExist(err) {
+	    if err := os.Symlink(domainPath, jailLink); err != nil {
+		    log.Fatalf("Failed to create jail symlink: %v", err)
+	    }
 	}
 
 	nginxPath := filepath.Join("/etc/nginx/conf.d", fmt.Sprintf("%s.conf", data.DomainDashed))

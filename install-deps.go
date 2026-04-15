@@ -1,11 +1,17 @@
 package main
 
 import (
+	"crypto/sha512"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -33,100 +39,140 @@ var installDepsCmd = &cobra.Command{
 }
 
 func checkPHP() error {
-	_, err := exec.LookPath("php")
-	if err == nil {
+	if _, err := exec.LookPath("php"); err == nil {
 		fmt.Println("✅ PHP is already installed.")
 		return nil
 	}
 
 	fmt.Println("⚠️ PHP not found. Attempting to install...")
 
-	// Check if we're on Rocky Linux 9
-	content, err := os.ReadFile("/etc/os-release")
+	info, err := readOSRelease()
 	if err != nil {
-		return fmt.Errorf("cannot determine OS: %w", err)
+		return err
 	}
 	osInfo := string(content)
 	if !(strings.Contains(osInfo, "Rocky Linux") && strings.Contains(osInfo, `VERSION_ID="9.6"`)) {
 		return fmt.Errorf("unsupported OS for auto-installation: only Rocky Linux 9 supported")
 	}
 
-	phpStream, err := detectLatestPhpStream()
-		if err != nil {
+	bootstrapPackages := [][]string{{
+		"dnf", "install", "-y",
+		"ca-certificates",
+		"curl",
+		"gnupg2",
+		"dnf-plugins-core",
+	}}
+	for _, args := range bootstrapPackages {
+		if err := runCommand(args[0], args[1:]...); err != nil {
 			return err
 		}
+	}
 
-	fmt.Printf("📦 Enabling PHP stream: %s\n", phpStream)
+	stream, err := detectLatestPhpStream()
+	if err != nil {
+		return err
+	}
 
-	fmt.Println("📦 Installing PHP from AppStream module...")
+	if stream == "" {
+		fmt.Println("📦 Installing PHP from standard RPM packages...")
+		return runCommand("dnf", "install", "-y", "php", "php-fpm", "php-cli", "php-common", "php-mbstring")
+	}
+
+	fmt.Printf("📦 Enabling PHP stream: %s\n", stream)
 	cmds := [][]string{
 		{"dnf", "install", "-y", "dnf-plugins-core"},
 		{"dnf", "module", "reset", "-y", "php"},
-		{"dnf", "module", "enable", "-y", fmt.Sprintf("php:%s", phpStream)},
+		{"dnf", "module", "enable", "-y", fmt.Sprintf("php:%s", stream)},
 		{"dnf", "install", "-y", "php-fpm", "php-cli", "php-common", "php-mbstring"},
 	}
 
 	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed running: %v: %w", args, err)
+		if err := runCommand(args[0], args[1:]...); err != nil {
+			return err
 		}
 	}
 
-	fmt.Println("✅ PHP installed successfully via AppStream.")
+	fmt.Println("✅ PHP installed successfully.")
 	return nil
 }
 
 func ensureComposer() error {
-	_, err := exec.LookPath("composer")
-	if err != nil {
-		fmt.Println("📦 Composer not found. Installing globally...")
-		// Download and install composer
-		cmd := exec.Command("php", "-r", "copy('https://getcomposer.org/installer', 'composer-setup.php');")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return err
-		}
-		cmd = exec.Command("php", "composer-setup.php", "--install-dir=/usr/local/bin", "--filename=composer")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return err
-		}
-		_ = os.Remove("composer-setup.php")
-	} else {
+	if _, err := exec.LookPath("composer"); err == nil {
 		fmt.Println("📦 Composer already installed. Updating...")
-		cmd := exec.Command("composer", "self-update")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return err
-		}
+		return runCommand("composer", "self-update")
 	}
-	return nil
+
+	fmt.Println("📦 Composer not found. Installing globally with checksum verification...")
+	tmpDir, err := os.MkdirTemp("", "composer-install-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	installerPath := filepath.Join(tmpDir, "composer-setup.php")
+	expectedChecksum, err := downloadText("https://composer.github.io/installer.sig")
+	if err != nil {
+		return fmt.Errorf("failed to download Composer checksum: %w", err)
+	}
+	if err := downloadFile("https://getcomposer.org/installer", installerPath); err != nil {
+		return fmt.Errorf("failed to download Composer installer: %w", err)
+	}
+
+	actualChecksum, err := sha384File(installerPath)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(expectedChecksum) != actualChecksum {
+		return fmt.Errorf("composer installer checksum mismatch")
+	}
+
+	return runCommand("php", installerPath, "--install-dir=/usr/local/bin", "--filename=composer")
 }
 
 func ensureWpCli() error {
-	_, err := exec.LookPath("wp")
+	if _, err := exec.LookPath("wp"); err == nil {
+		fmt.Println("📦 WP-CLI already installed. Updating...")
+		return runCommand("wp", "cli", "update", "--yes")
+	}
+
+	if _, err := exec.LookPath("gpg"); err != nil {
+		return fmt.Errorf("gpg is required to verify WP-CLI downloads")
+	}
+
+	fmt.Println("📦 WP-CLI not found. Installing globally with GPG verification...")
+	tmpDir, err := os.MkdirTemp("", "wpcli-install-*")
 	if err != nil {
-		fmt.Println("📦 WP-CLI not found. Installing globally...")
-		// Download and install wp-cli
-		cmd := exec.Command("curl", "-O", "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return err
-		}
-		cmd = exec.Command("chmod", "+x", "wp-cli.phar")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return err
-		}
-		cmd = exec.Command("mv", "wp-cli.phar", "/usr/local/bin/wp")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return err
-		}
-	} else {
-		fmt.Println("📦 WP-CLI already installed.")
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	pharPath := filepath.Join(tmpDir, "wp-cli.phar")
+	ascPath := filepath.Join(tmpDir, "wp-cli.phar.asc")
+	keyPath := filepath.Join(tmpDir, "wp-cli.pgp")
+
+	if err := downloadFile("https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar", pharPath); err != nil {
+		return fmt.Errorf("failed to download WP-CLI phar: %w", err)
+	}
+	if err := downloadFile("https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar.asc", ascPath); err != nil {
+		return fmt.Errorf("failed to download WP-CLI signature: %w", err)
+	}
+	if err := downloadFile("https://raw.githubusercontent.com/wp-cli/builds/gh-pages/wp-cli.pgp", keyPath); err != nil {
+		return fmt.Errorf("failed to download WP-CLI public key: %w", err)
+	}
+
+	gpgHome := filepath.Join(tmpDir, "gpg")
+	if err := os.MkdirAll(gpgHome, 0o700); err != nil {
+		return err
+	}
+	if err := runCommand("gpg", "--homedir", gpgHome, "--batch", "--import", keyPath); err != nil {
+		return fmt.Errorf("failed to import WP-CLI signing key: %w", err)
+	}
+	if err := runCommand("gpg", "--homedir", gpgHome, "--batch", "--verify", ascPath, pharPath); err != nil {
+		return fmt.Errorf("failed to verify WP-CLI phar: %w", err)
+	}
+
+	if err := copyFile(pharPath, "/usr/local/bin/wp", 0o755); err != nil {
+		return err
 	}
 	return nil
 }
@@ -135,18 +181,158 @@ func detectLatestPhpStream() (string, error) {
 	cmd := exec.Command("dnf", "module", "list", "php", "--all")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to list php module streams: %w", err)
+		return "", nil
 	}
 
-	re := regexp.MustCompile(`(?m)^php\s+(\d\.\d)\s`)
-	var latest string
-	for _, match := range re.FindAllStringSubmatch(string(out), -1) {
-		if len(match) > 1 {
-			latest = match[1]
+	re := regexp.MustCompile(`(?m)^php\s+(\d+)\.(\d+)\s`)
+	matches := re.FindAllStringSubmatch(string(out), -1)
+	if len(matches) == 0 {
+		return "", nil
+	}
+
+	type version struct {
+		major int
+		minor int
+		text  string
+	}
+
+	versions := make([]version, 0, len(matches))
+	for _, match := range matches {
+		major, err1 := strconv.Atoi(match[1])
+		minor, err2 := strconv.Atoi(match[2])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		versions = append(versions, version{major: major, minor: minor, text: match[1] + "." + match[2]})
+	}
+	if len(versions) == 0 {
+		return "", nil
+	}
+
+	sort.Slice(versions, func(i, j int) bool {
+		if versions[i].major != versions[j].major {
+			return versions[i].major > versions[j].major
+		}
+		return versions[i].minor > versions[j].minor
+	})
+
+	return versions[0].text, nil
+}
+
+func readOSRelease() (*osReleaseInfo, error) {
+	content, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return nil, fmt.Errorf("cannot determine OS: %w", err)
+	}
+
+	info := &osReleaseInfo{}
+	for _, line := range strings.Split(string(content), "\n") {
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := parts[0]
+		value := strings.Trim(parts[1], `"`)
+		switch key {
+		case "ID":
+			info.ID = value
+		case "ID_LIKE":
+			info.IDLike = value
+		case "VERSION_ID":
+			info.VersionID = value
 		}
 	}
-	if latest == "" {
-		return "", fmt.Errorf("no php module stream found")
+	return info, nil
+}
+
+func isRHEL9Compatible(info *osReleaseInfo) bool {
+	major := strings.SplitN(info.VersionID, ".", 2)[0]
+	if major != "9" {
+		return false
 	}
-	return latest, nil
+
+	ids := append([]string{info.ID}, strings.Fields(info.IDLike)...)
+	for _, id := range ids {
+		switch id {
+		case "rhel", "rocky", "almalinux":
+			return true
+		}
+	}
+	return false
+}
+
+func downloadText(url string) (string, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected HTTP status %s for %s", resp.Status, url)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func downloadFile(url, path string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected HTTP status %s for %s", resp.Status, url)
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, resp.Body)
+	return err
+}
+
+func sha384File(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha512.New384()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Chmod(mode)
+}
+
+func runCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

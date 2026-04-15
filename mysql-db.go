@@ -4,17 +4,18 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"time"
 	"math/rand"
-	"strconv"
-	"strings"
+	"net"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/martinhoefling/goxkcdpwgen/xkcdpwgen"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	_ "github.com/go-sql-driver/mysql"
 )
 
 type MySQLDatabaseRecord struct {
@@ -60,7 +61,7 @@ var mysqlCreateCmd = &cobra.Command{
 				log.Fatalf("import file does not exist: %s", importPath)
 			}
 			if err != nil {
-				log.Fatalf("unable to access import file: %w", err)
+				log.Fatalf("unable to access import file: %v", err)
 			}
 			if info.IsDir() {
 				log.Fatalf("import path is a directory, not a file: %s", importPath)
@@ -231,29 +232,65 @@ func mysqlDeleteHandler(cmd *cobra.Command, args []string) {
 
 func importSqlFile(importPath string, username string, dbName string, password string) error {
 	if importPath == "" {
-		return nil;
+		return nil
 	}
 
-	cmd := exec.Command("mysql",
+	if _, err := exec.LookPath("mysql"); err != nil {
+		return fmt.Errorf("mysql client not found in PATH: %w", err)
+	}
+
+	sqlFile, err := os.Open(importPath)
+	if err != nil {
+		return fmt.Errorf("failed to open import file %s: %w", importPath, err)
+	}
+	defer sqlFile.Close()
+
+	host, port := mysqlHostPortFromConfig()
+	cmd := exec.Command(
+		"mysql",
+		"--protocol=tcp",
 		"-u", username,
-		"-p" + password,
-		"-h", "127.0.0.1",
-		"-P", "3306",
+		"-h", host,
+		"-P", port,
 		dbName,
 	)
-
-	sqlFile, _ := os.Open(importPath)
-	defer sqlFile.Close()
+	cmd.Env = append(os.Environ(), "MYSQL_PWD="+password)
 	cmd.Stdin = sqlFile
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	fmt.Printf("📥 Importing SQL into %s...\n", dbName)
+	fmt.Printf("📥 Importing SQL into %s from %s...\n", dbName, importPath)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("mysql import failed: %w", err)
 	}
 
 	return nil
+}
+
+func mysqlHostPortFromConfig() (string, string) {
+	addr := strings.TrimSpace(viper.GetString("mysql.host"))
+	if addr == "" {
+		return "127.0.0.1", "3306"
+	}
+
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if port == "" {
+			port = "3306"
+		}
+		return host, port
+	}
+
+	if strings.Count(addr, ":") == 1 {
+		parts := strings.SplitN(addr, ":", 2)
+		if parts[0] != "" && parts[1] != "" {
+			return parts[0], parts[1]
+		}
+	}
+
+	return addr, "3306"
 }
 
 func fetchDatabaseStats() (map[string]float64, error) {

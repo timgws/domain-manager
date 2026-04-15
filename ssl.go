@@ -14,7 +14,7 @@ var enableSSL = &cobra.Command{
     Args:  cobra.ExactArgs(1),
     Run: func(cmd *cobra.Command, args []string) {
         domain := args[0]
-        domainDir := filepath.Join("/data/websites", domain)
+        domainDir := filepath.Join(websitesRoot, domain)
         cfFlag, _ := cmd.Flags().GetBool("cloudflare")
         noReload, _ := cmd.Flags().GetBool("no-reload")
 

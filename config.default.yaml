@@ -1,10 +1,35 @@
+# I recommend setting database_path to a global file somewhere.
 database_path: "/var/lib/domain-manager/domains.db"
 base_output_dir: "/opt/domain-manager/docker"
-template_dir: "./templates"
-default_php_version: "8.2"
+
+# podman is good if you are using the newest rocky.
+# you can also use docker.
 default_runtime: "podman"
+
+# specify the version of PHP you want to use.
+default_php_version: "8.4"
+
+# where nginx and docker templates are stored.
+template_dir: "./templates"
+
 
 mysql:
   host: "127.0.0.1:3306"
   root_user: "root"
   root_password: "MyMySQLP433w0rd!IsNotThis"
+
+
+# If you have nginx config somewhere else (eg, not stored as part of your system config) then set the path here
+#nginx_conf_dir: /etc/nginx/conf.d
+#letsencrypt_live_dir: /etc/letsencrypt/live
+#letsencrypt_archive_dir: /etc/letsencrypt/archive
+#letsencrypt_renewal_dir: /etc/letsencrypt/renewal
+#cloudflare_credentials_dir: /root/.secrets/cf
+
+# If you want to use one certbot email for all domains, set the email address here
+# I think LetsEncrypt is removing email notifications soon?
+#certbot_email: admin@example.com
+
+# If you want to store backups in a specific folder, set it here.
+# If it's not set, running backup will simply create a file in your current directory.
+#backup_output_dir: /var/backups/domain-manager

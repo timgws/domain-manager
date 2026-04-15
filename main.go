@@ -18,19 +18,15 @@ import (
 	"github.com/spf13/viper"
 )
 
-type DomainRecord struct {
-	ID        int       `storm:"id,increment"`
-	Domain    string    `storm:"unique"`
-	Username  string
-	CreatedAt time.Time
-}
-
 type DomainData struct {
-	ID           int
-	Domain       string
+	ID           int    `storm:"id,increment"`
+	Domain       string `storm:"unique"`
+	Username     string
+	CreatedAt    time.Time
 	DomainDashed string
 	PHPVersion   string
-	Username     string
+	UID          int
+	GID          int
 }
 
 var websitesRoot string
@@ -51,14 +47,11 @@ var addCmd = &cobra.Command{
 	Use:   "add [domain.com]",
 	Short: "Add a new domain",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		setRuntime()
-		domain := args[0]
 		db := initDB()
 		defer db.Close()
-		if err := setupDomain(db, domain, force); err != nil {
-			log.Fatal("Error:", err)
-		}
+		return setupDomain(db, args[0], force)
 	},
 }
 
@@ -71,6 +64,9 @@ func main() {
 	addCmd.Flags().BoolVar(&skipReload, "no-reload", false, "Skip nginx reload")
 
 	bootstrapCmd.Flags().BoolVar(&forceBootstrap, "force", false, "overwrite contents if target directory is not empty")
+	enableSSL.Flags().Bool("cloudflare", false, "Force Cloudflare DNS validation")
+	enableSSL.Flags().Bool("no-reload", false, "Skip nginx reload after issuing certificates")
+	backupCmd.Flags().StringVar(&backupOutputDir, "output-dir", "", "Directory to write the backup archive to")
 
 	mysqlCreateCmd.Flags().StringVar(&importPath, "import", "", "Optional path to SQL file to import")
 
@@ -78,8 +74,14 @@ func main() {
 	mysqlCmd.AddCommand(mysqlCreateCmd)
 	mysqlCmd.AddCommand(mysqlListCmd)
 	mysqlCmd.AddCommand(mysqlDeleteCmd)
-	rootCmd.AddCommand(mysqlCmd)
 
+	migrateDomainsCmd.Flags().BoolVar(&migrateDomainsDryRun, "dry-run", false, "Show what would be migrated without writing anything")
+	migrateDomainsCmd.Flags().BoolVar(&migrateDomainsForce, "force", false, "Replace existing DomainData records before migrating")
+	migrateDomainsCmd.Flags().BoolVar(&migrateDomainsDropOld, "drop-old-bucket", false, "Drop the old DomainRecord bucket after a successful migration")
+
+	rootCmd.AddCommand(migrateDomainsCmd)
+
+	rootCmd.AddCommand(mysqlCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(infoCmd)
@@ -87,6 +89,7 @@ func main() {
 	rootCmd.AddCommand(enableSSL)
 	rootCmd.AddCommand(installDepsCmd)
 	rootCmd.AddCommand(bootstrapCmd)
+	rootCmd.AddCommand(backupCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
@@ -232,19 +235,16 @@ func userExists(username string) bool {
 }
 
 func createUnixUser(username string) error {
-	// Ensure the sftpusers group exists
 	if err := exec.Command("getent", "group", "sftpusers").Run(); err != nil {
 		if err := exec.Command("groupadd", "sftpusers").Run(); err != nil {
 			return fmt.Errorf("failed to create sftpusers group: %w", err)
 		}
 	}
 
-	// Create user and add to sftpusers group
 	cmd := exec.Command("useradd", "-m", "-s", "/usr/sbin/nologin", "-G", "sftpusers", username)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to create user %s: %w", username, err)
 	}
-
 	return nil
 }
 
@@ -273,113 +273,94 @@ func renderTemplate(tmplPath string, data DomainData) (string, error) {
 }
 
 func setupDomain(db *storm.DB, domain string, force bool) error {
-	var existing DomainRecord
-	err := db.One("Domain", domain, &existing)
-	if err == nil && !force {
-		return fmt.Errorf("domain '%s' already exists", domain)
-	}
-
-	if err == nil && force {
+	existing, err := getDomainByName(db, domain)
+	switch {
+	case err == nil && !force:
+		return fmt.Errorf("domain %q already exists", domain)
+	case err == nil && force:
 		fmt.Println("⚠️ Domain exists, but proceeding due to --force.")
-	}
-
-	username := generateUsername(domain)
-	if !userExists(username) {
-		fmt.Println("Creating user:", username)
-		if err := createUnixUser(username); err != nil {
-			return fmt.Errorf("could not create user: %w", err)
+	case errors.Is(err, storm.ErrNotFound):
+		existing = &DomainData{
+			Domain:       domain,
+			Username:     generateUsername(domain),
+			CreatedAt:    time.Now(),
+			DomainDashed: strings.ReplaceAll(domain, ".", "-"),
+			PHPVersion:   viper.GetString("default_php_version"),
 		}
-	}
-
-	if existing.ID == 0 {
-		record := DomainRecord{
-			Domain:    domain,
-			Username:  username,
-			CreatedAt: time.Now(),
+		if err := db.Save(existing); err != nil {
+			return fmt.Errorf("failed to save domain record: %w", err)
 		}
-		if err := db.Save(&record); err != nil {
-			return fmt.Errorf("failed to save initial domain record: %w", err)
-		}
-		existing = record
-	}
-
-
-	outputDir := filepath.Join(viper.GetString("base_output_dir"), domain)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	default:
 		return err
 	}
 
-	data := DomainData{
-		ID:           existing.ID,
-		Domain:       domain,
-		DomainDashed: strings.ReplaceAll(domain, ".", "-"),
-		PHPVersion:   viper.GetString("default_php_version"),
-		Username:     username,
+	if existing.Username == "" {
+		existing.Username = generateUsername(domain)
+	}
+	if !userExists(existing.Username) {
+		fmt.Println("Creating user:", existing.Username)
+		if err := createUnixUser(existing.Username); err != nil {
+			return fmt.Errorf("could not create user: %w", err)
+		}
+	}
+	enrichDomain(existing)
+	if existing.UID == 0 || existing.GID == 0 {
+		return fmt.Errorf("failed to determine UID/GID for %s", existing.Username)
+	}
+
+	outputDir := filepath.Join(viper.GetString("base_output_dir"), domain)
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return err
 	}
 
 	templates := []string{"docker-compose.yml.tmpl", "php-fpm.Dockerfile.tmpl"}
 	for _, tmpl := range templates {
 		tmplPath := filepath.Join(viper.GetString("template_dir"), tmpl)
-		rendered, err := renderTemplateWithFuncs(tmplPath, data)
+		rendered, err := renderTemplateWithFuncs(tmplPath, *existing)
 		if err != nil {
 			return err
 		}
 		dest := filepath.Join(outputDir, strings.TrimSuffix(tmpl, ".tmpl"))
-		if err := os.WriteFile(dest, []byte(rendered), 0644); err != nil {
+		if err := os.WriteFile(dest, []byte(rendered), 0o644); err != nil {
 			return err
 		}
 		fmt.Println("Generated:", dest)
 	}
 
 	domainPath := filepath.Join(websitesRoot, domain)
-	jailLink := filepath.Join(jailhomesRoot, username)
-
-	if err := os.MkdirAll(domainPath, 0755); err != nil {
-		log.Fatalf("Failed to create domain dir: %v", err)
+	jailLink := filepath.Join(jailhomesRoot, existing.Username)
+	if err := os.MkdirAll(domainPath, 0o755); err != nil {
+		return fmt.Errorf("failed to create domain dir: %w", err)
 	}
-
-	if err := os.MkdirAll(jailhomesRoot, 0755); err != nil {
-		log.Fatalf("Failed to create jailhomes root dir: %v", err)
+	if err := os.MkdirAll(jailhomesRoot, 0o755); err != nil {
+		return fmt.Errorf("failed to create jailhomes root dir: %w", err)
 	}
-
-
 	if _, err := os.Lstat(jailLink); os.IsNotExist(err) {
-	    if err := os.Symlink(domainPath, jailLink); err != nil {
-		    log.Fatalf("Failed to create jail symlink: %v", err)
-	    }
+		if err := os.Symlink(domainPath, jailLink); err != nil {
+			return fmt.Errorf("failed to create jail symlink: %w", err)
+		}
 	}
 
-	nginxPath := filepath.Join("/etc/nginx/conf.d", fmt.Sprintf("%s.conf", data.DomainDashed))
+	nginxPath := filepath.Join(nginxConfDir(), existing.DomainDashed+".conf")
 	tmplPath := filepath.Join(viper.GetString("template_dir"), "nginx.conf.tmpl")
-	nginxConf, err := renderTemplateWithFuncs(tmplPath, data)
+	nginxConf, err := renderTemplateWithFuncs(tmplPath, *existing)
 	if err != nil {
 		return fmt.Errorf("failed to render nginx config: %w", err)
 	}
-	if err := os.WriteFile(nginxPath, []byte(nginxConf), 0644); err != nil {
+	if err := os.WriteFile(nginxPath, []byte(nginxConf), 0o644); err != nil {
 		return fmt.Errorf("failed to write nginx config: %w", err)
 	}
 	fmt.Println("✅ Nginx config written to", nginxPath)
 
-	domainDir := filepath.Join(viper.GetString("base_output_dir"), domain)
 	if !skipUp {
-		if err := runComposeUp(domainDir, runtime, force); err != nil {
+		if err := runComposeUp(outputDir, runtime, force); err != nil {
 			log.Printf("⚠️ Failed to start container: %v", err)
 		}
 	}
-
 	if !skipReload {
 		if err := reloadNginx(); err != nil {
 			log.Printf("⚠️ Failed to reload nginx: %v", err)
 		}
-	}
-
-	if !force {
-		record := DomainRecord{
-			Domain:    domain,
-			Username:  username,
-			CreatedAt: time.Now(),
-		}
-		return db.Save(&record)
 	}
 	return nil
 }

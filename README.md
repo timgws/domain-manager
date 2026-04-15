@@ -22,6 +22,7 @@ Traditional hosting panels are heavy, opinionated, and often come with licensing
 
 - 🔧 Per-domain `php-fpm` container generation (Docker/Podman)
 - 📂 Mount WordPress files from `/data/websites/{domain}`
+- 💾 Per-domain backup command that creates a `.tar.bz2` archive
 - 🐧 Creates isolated Unix system user per domain
 - 🐬 MySQL database provisioning with namespaced DBs (e.g. `example_com_main`)
 - 🔑 Auto-generated secure MySQL passwords (displayed once)
@@ -98,6 +99,23 @@ go build -o domain-manager .
 # Manage MySQL databases
 ./domain-manager mysql create example.com example_db_name
 ./domain-manager mysql list example.com --stats
+
+# SSL
+./domain-manager enable-ssl example.com --cloudflare
+```
+
+## Backups
+
+The `backup` command creates a `.tar.bz2` archive containing:
+
+- `site/` — the website root for the domain
+- `databases/` — SQL dumps for all MySQL databases associated with the domain
+- `metadata.txt` — basic domain backup metadata
+
+Example:
+
+```bash
+./domain-manager backup example.com --output-dir /backups
 ```
 
 ### Flags

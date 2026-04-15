@@ -27,7 +27,7 @@ var bootstrapCmd = &cobra.Command{
 
 		d, err := GetByName(domainName)
 		if err != nil {
-			return fmt.Errorf("domain not found: %w", err)
+			return err
 		}
 
 		return bootstrapProject(d, kind)
@@ -35,15 +35,25 @@ var bootstrapCmd = &cobra.Command{
 }
 
 func bootstrapProject(d *DomainData, kind string) error {
-	targetDir := filepath.Join("/data/websites", d.Domain)
+	targetDir := filepath.Join(websitesRoot, d.Domain)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("cannot create domain directory: %w", err)
+	}
 
 	// Check if directory exists and is non-empty
 	entries, err := os.ReadDir(targetDir)
 	if err != nil {
 		return fmt.Errorf("cannot read domain directory: %w", err)
 	}
-	if len(entries) > 0 && !forceBootstrap {
-		return fmt.Errorf("target directory %s is not empty (use --force to overwrite)", targetDir)
+	if len(entries) > 0 {
+		if !forceBootstrap {
+			return fmt.Errorf("target directory %s is not empty (use --force to overwrite)", targetDir)
+		}
+		for _, entry := range entries {
+			if err := os.RemoveAll(filepath.Join(targetDir, entry.Name())); err != nil {
+				return fmt.Errorf("cannot clear %s: %w", targetDir, err)
+			}
+		}
 	}
 
 	var cmd *exec.Cmd

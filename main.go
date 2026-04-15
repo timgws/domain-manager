@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -94,16 +97,22 @@ func initConfig() {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath("/etc/domain-manager/")
-	viper.AddConfigPath(".") // allow local override
+	viper.AddConfigPath(".")
+
+	viper.SetDefault("nginx_conf_dir", "/etc/nginx/conf.d")
+	viper.SetDefault("letsencrypt_live_dir", "/etc/letsencrypt/live")
+	viper.SetDefault("letsencrypt_archive_dir", "/etc/letsencrypt/archive")
+	viper.SetDefault("letsencrypt_renewal_dir", "/etc/letsencrypt/renewal")
+	viper.SetDefault("cloudflare_credentials_dir", "/root/.secrets/cf")
+
 	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("Error reading config: %v", err)
+		log.Fatalf("error reading config: %v", err)
 	}
 
 	websitesRoot = viper.GetString("websites_root")
 	jailhomesRoot = viper.GetString("jailhomes_root")
-
 	if websitesRoot == "" || jailhomesRoot == "" {
-		log.Fatal("paths.websites_root and paths.jailhomes_root must be configured")
+		log.Fatal("websites_root and jailhomes_root must be configured")
 	}
 }
 
@@ -111,20 +120,46 @@ func initDB() *storm.DB {
 	dbPath := viper.GetString("database_path")
 	db, err := storm.Open(dbPath)
 	if err != nil {
-		log.Fatalf("Failed to open Storm DB: %v", err)
+		log.Fatalf("failed to open Storm DB: %v", err)
 	}
 	return db
 }
 
-
 func GetByName(name string) (*DomainData, error) {
 	db := initDB()
+	defer db.Close()
+	return getDomainByName(db, name)
+}
+
+func getDomainByName(db *storm.DB, name string) (*DomainData, error) {
 	var d DomainData
-	err := db.One("Name", name, &d)
-	if err != nil {
+	if err := db.One("Domain", name, &d); err != nil {
 		return nil, fmt.Errorf("domain %s not found: %w", name, err)
 	}
+	enrichDomain(&d)
 	return &d, nil
+}
+
+func enrichDomain(d *DomainData) {
+	if d.DomainDashed == "" {
+		d.DomainDashed = strings.ReplaceAll(d.Domain, ".", "-")
+	}
+	if d.PHPVersion == "" {
+		d.PHPVersion = viper.GetString("default_php_version")
+	}
+	if d.Username == "" {
+		d.Username = generateUsername(d.Domain)
+	}
+	if d.UID == 0 || d.GID == 0 {
+		if usr, err := user.Lookup(d.Username); err == nil {
+			if uid, err := strconv.Atoi(usr.Uid); err == nil {
+				d.UID = uid
+			}
+			if gid, err := strconv.Atoi(usr.Gid); err == nil {
+				d.GID = gid
+			}
+		}
+	}
 }
 
 func setRuntime() {
@@ -135,38 +170,52 @@ func setRuntime() {
 		}
 	}
 	if runtime != "podman" && runtime != "docker" {
-		log.Fatalf("Invalid runtime: %s (must be 'podman' or 'docker')", runtime)
+		log.Fatalf("invalid runtime: %s (must be 'podman' or 'docker')", runtime)
 	}
 }
 
 func runComposeUp(domainDir, runtime string, force bool) error {
-	var downCmd *exec.Cmd
 	var upCmd *exec.Cmd
-
 	if runtime == "docker" {
-		downCmd = exec.Command("docker-compose", "down")
 		upCmd = exec.Command("docker-compose", "up", "--build", "-d")
 	} else {
-		downCmd = exec.Command("podman-compose", "down")
 		upCmd = exec.Command("podman-compose", "up", "--build", "-d")
 	}
 
-	downCmd.Dir = domainDir
-	upCmd.Dir = domainDir
-	downCmd.Stdout = os.Stdout
-	downCmd.Stderr = os.Stderr
-	upCmd.Stdout = os.Stdout
-	upCmd.Stderr = os.Stderr
-
 	if force {
 		fmt.Printf("🔁 Force mode: bringing down existing %s-compose stack...\n", runtime)
-		if err := downCmd.Run(); err != nil {
-			log.Printf("⚠️ Failed to run %s-compose down: %v", runtime, err)
+		if err := runComposeDown(domainDir, runtime); err != nil {
+			log.Printf("⚠️ failed to run %s-compose down: %v", runtime, err)
 		}
 	}
 
+	upCmd.Dir = domainDir
+	upCmd.Stdout = os.Stdout
+	upCmd.Stderr = os.Stderr
 	fmt.Printf("🌀 Starting %s-compose for %s...\n", runtime, domainDir)
 	return upCmd.Run()
+}
+
+func runComposeDown(domainDir, runtime string) error {
+	if _, err := os.Stat(domainDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to access compose directory %s: %w", domainDir, err)
+	}
+
+	var downCmd *exec.Cmd
+	if runtime == "docker" {
+		downCmd = exec.Command("docker-compose", "down")
+	} else {
+		downCmd = exec.Command("podman-compose", "down")
+	}
+
+	downCmd.Dir = domainDir
+	downCmd.Stdout = os.Stdout
+	downCmd.Stderr = os.Stderr
+	fmt.Printf("🛑 Stopping %s-compose for %s...\n", runtime, domainDir)
+	return downCmd.Run()
 }
 
 func generateUsername(domain string) string {

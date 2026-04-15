@@ -16,6 +16,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type osReleaseInfo struct {
+	ID        string
+	IDLike    string
+	VersionID string
+}
+
 var installDepsCmd = &cobra.Command{
 	Use:   "install-deps",
 	Short: "Ensure composer and wp-cli are installed and up-to-date globally",
@@ -25,7 +31,6 @@ var installDepsCmd = &cobra.Command{
 		if err := checkPHP(); err != nil {
 			return err
 		}
-
 		if err := ensureComposer(); err != nil {
 			return fmt.Errorf("composer install failed: %w", err)
 		}
@@ -50,9 +55,8 @@ func checkPHP() error {
 	if err != nil {
 		return err
 	}
-	osInfo := string(content)
-	if !(strings.Contains(osInfo, "Rocky Linux") && strings.Contains(osInfo, `VERSION_ID="9.6"`)) {
-		return fmt.Errorf("unsupported OS for auto-installation: only Rocky Linux 9 supported")
+	if !isRHEL9Compatible(info) {
+		return fmt.Errorf("unsupported OS for auto-installation: only RHEL 9-compatible systems are supported")
 	}
 
 	bootstrapPackages := [][]string{{
@@ -80,12 +84,10 @@ func checkPHP() error {
 
 	fmt.Printf("📦 Enabling PHP stream: %s\n", stream)
 	cmds := [][]string{
-		{"dnf", "install", "-y", "dnf-plugins-core"},
 		{"dnf", "module", "reset", "-y", "php"},
 		{"dnf", "module", "enable", "-y", fmt.Sprintf("php:%s", stream)},
 		{"dnf", "install", "-y", "php-fpm", "php-cli", "php-common", "php-mbstring"},
 	}
-
 	for _, args := range cmds {
 		if err := runCommand(args[0], args[1:]...); err != nil {
 			return err

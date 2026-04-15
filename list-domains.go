@@ -1,12 +1,11 @@
 package main
 
 import (
-	"log"
 	"fmt"
+	"log"
 
 	"github.com/spf13/cobra"
 )
-
 
 var listCmd = &cobra.Command{
 	Use:   "list",
@@ -15,7 +14,7 @@ var listCmd = &cobra.Command{
 		db := initDB()
 		defer db.Close()
 
-		var domains []DomainRecord
+		var domains []DomainData
 		err := db.All(&domains)
 		if err != nil {
 			log.Fatalf("Error fetching domains: %v", err)

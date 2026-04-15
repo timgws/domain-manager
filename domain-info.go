@@ -1,42 +1,41 @@
 package main
 
 import (
-	"log"
 	"fmt"
-	"strings"
 
+	"github.com/asdine/storm/v3"
 	"github.com/spf13/cobra"
 )
-
 
 var infoCmd = &cobra.Command{
 	Use:   "info [domain]",
 	Short: "Show detailed info for a domain",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		domain := args[0]
-		db := initDB()
-		defer db.Close()
-
-		var d DomainRecord
-		err := db.One("Domain", domain, &d)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		d, err := GetByName(args[0])
 		if err != nil {
-			log.Fatalf("Domain not found: %s", domain)
+			return err
 		}
 
 		fmt.Println("Domain    :", d.Domain)
 		fmt.Println("Username  :", d.Username)
 		fmt.Println("PHP Port  :", 9000+d.ID)
 		fmt.Println("Created   :", d.CreatedAt.Format("2006-01-02 15:04"))
-		fmt.Println("Container :", "php-"+strings.ReplaceAll(d.Domain, ".", "-"))
+		fmt.Println("Container :", "php-"+d.DomainDashed)
+
+		db := initDB()
+		defer db.Close()
 
 		var dbs []MySQLDatabaseRecord
-		_ = db.Find("Domain", domain, &dbs)
+		if err := db.Find("Domain", d.Domain, &dbs); err != nil && err != storm.ErrNotFound {
+			return err
+		}
 		if len(dbs) > 0 {
 			fmt.Println("Databases :")
-			for _, db := range dbs {
-				fmt.Println("  -", db.DbName)
+			for _, dbRecord := range dbs {
+				fmt.Println("  -", dbRecord.DbName)
 			}
 		}
+		return nil
 	},
 }

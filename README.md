@@ -124,6 +124,47 @@ Example:
 * `--no-up` — skip container startup
 * `--no-reload` — skip nginx reload
 
+## Troubleshooting
+### Setting up servers for reboots
+```
+# Check if podman has set the restart policy away from 'no'.
+podman inspect php-example-org --format '{{.HostConfig.RestartPolicy.Name}}'
+
+# Change the restart policy to unless-stopped.
+podman update --restart=unless-stopped php-example-org
+```
+
+### Make sure the PHP version is correct
+When you are trying to confirm a PHP upgrade, check both:
+1. the PHP version inside the running container
+2. the PHP version in the current image tag
+
+This tells you what version the currently running container is actually using:
+```
+podman exec php-example-org php -v
+```
+
+This tells you what version the latest built image contains:
+```
+podman run --rm localhost/exampleorg_php:latest php -v
+```
+
+If these are different, the problem is that the existing container was
+created from the older PHP image and is still being started again at boot.
+
+To apply the new PHP version, you need to remove the old container and
+recreate it from the rebuilt image.
+
+```
+podman-compose down
+podman rm -f php-example-org
+podman-compose up --build -d
+```
+
+* rebuilding the image updates `localhost/exampleorg_php:latest`
+* it does not automatically upgrade an already-existing container
+* removing and recreating the container ensures the running container actually uses the new PHP version
+
 ## 🧱 Stack
 * `nginx` serves static files and proxies `.php` requests to host-mapped container ports
 * `PHP-FPM` runs per-site in containers

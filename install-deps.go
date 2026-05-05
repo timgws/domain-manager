@@ -264,7 +264,12 @@ func isRHEL9Compatible(info *osReleaseInfo) bool {
 }
 
 func downloadText(url string) (string, error) {
-	resp, err := http.Get(url)
+	var httpClient = &http.Client{
+		Timeout: 60 * time.Second * 10,
+	}
+
+	resp, err := httpClient.Get(url)
+
 	if err != nil {
 		return "", err
 	}
@@ -280,7 +285,12 @@ func downloadText(url string) (string, error) {
 }
 
 func downloadFile(url, path string) error {
-	resp, err := http.Get(url)
+	var httpClient = &http.Client{
+		Timeout: 60 * time.Second * 10,
+	}
+
+	resp, err := httpClient.Get(url)
+
 	if err != nil {
 		return err
 	}

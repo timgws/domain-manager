@@ -45,7 +45,7 @@ Traditional hosting panels are heavy, opinionated, and often come with licensing
 ---
 
 ## 🐬 Installing MySQL (Percona Server 8.4 LTS)
-To keep your setup lean, Domain Manager assumes that **MySQL is running on the host**, not in a container. For maximum compatibility and long-term support, we recommend using Percona Server for [MySQL 8.4 LTS][https://www.percona.com/software/mysql-database/percona-server-for-mysql], a drop-in replacement for MySQL with extended support and observability features.
+To keep your setup lean, Domain Manager assumes that **MySQL is running on the host**, not in a container. For maximum compatibility and long-term support, we recommend using Percona Server for [MySQL 8.4 LTS](https://www.percona.com/software/mysql-database/percona-server-for-mysql), a drop-in replacement for MySQL with extended support and observability features.
 
 Here's how to install it on RHEL-based systems (e.g. AlmaLinux, Rocky Linux):
 

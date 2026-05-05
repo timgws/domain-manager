@@ -107,14 +107,6 @@ var deleteCmd = &cobra.Command{
 			}
 		}
 
-		if err := removePathIfExists(composeDir); err != nil {
-			cleanupErrs = append(cleanupErrs, err)
-		}
-
-		if err := removeDomainCertificates(domain.Domain); err != nil {
-			cleanupErrs = append(cleanupErrs, err)
-		}
-
 		if deleteUser {
 			if err := removePathIfExists(filepath.Join(jailhomesRoot, domain.Username)); err != nil {
 				cleanupErrs = append(cleanupErrs, err)

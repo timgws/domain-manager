@@ -59,7 +59,7 @@ func bootstrapProject(d *DomainData, kind string) error {
 	var cmd *exec.Cmd
 	if kind == "wordpress" {
 		cmd = exec.Command("wp", "core", "download", "--path="+targetDir)
-	} else if kind == "laravel" {
+	} else {
 		cmd = exec.Command("composer", "create-project", "laravel/laravel", targetDir)
 	}
 

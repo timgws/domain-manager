@@ -4,6 +4,10 @@ services:
     build:
       context: ./
       dockerfile: php-fpm.Dockerfile
+      args:
+        USERNAME: {{ .Username }}
+        UID: {{ .UID }}
+        GID: {{ .GID }}
     container_name: php-{{ .DomainDashed }}
     volumes:
       - /data/websites/{{ .Domain }}:/var/www/html:ro

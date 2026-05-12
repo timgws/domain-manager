@@ -1,6 +1,6 @@
 server {
     listen 80;
-    server_name {{ .Domain }};
+    server_name {{ range .ServerNames }}{{ . }} {{ end }};
 
     root /data/websites/{{ .Domain }};
     index index.php index.html;
@@ -11,10 +11,23 @@ server {
 
     location ~ \.php$ {
         include fastcgi_params;
-	fastcgi_pass 127.0.0.1:{{ add 9000 .ID }};
+        fastcgi_pass 127.0.0.1:{{ add 9000 .ID }};
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
     }
 
     access_log /var/log/nginx/{{ .DomainDashed }}.access.log;
     error_log /var/log/nginx/{{ .DomainDashed }}.error.log;
 }
+
+{{ range .RedirectAliases }}
+server {
+    listen 80;
+    server_name {{ .Alias }};
+
+    return 301 http://{{ $.Domain }}$request_uri;
+
+    access_log /var/log/nginx/{{ .DomainDashed }}.access.log;
+    error_log /var/log/nginx/{{ .DomainDashed }}.error.log;
+}
+{{ end }}
+

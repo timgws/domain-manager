@@ -40,7 +40,6 @@ func bootstrapProject(d *DomainData, kind string) error {
 		return fmt.Errorf("cannot create domain directory: %w", err)
 	}
 
-	// Check if directory exists and is non-empty
 	entries, err := os.ReadDir(targetDir)
 	if err != nil {
 		return fmt.Errorf("cannot read domain directory: %w", err)
@@ -67,4 +66,3 @@ func bootstrapProject(d *DomainData, kind string) error {
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
-

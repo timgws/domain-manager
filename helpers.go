@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
 	"github.com/spf13/viper"
 )
 
@@ -112,3 +111,4 @@ func reloadNginx() error {
 func nginxConfDir() string {
 	return viper.GetString("nginx_conf_dir")
 }
+

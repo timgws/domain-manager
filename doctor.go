@@ -53,10 +53,10 @@ func runDoctorCommand(cmd *cobra.Command, args []string) error {
 
 	report := &doctorReport{}
 
-	runGlobalDoctorChecks(ctx, report)
-
 	if len(args) == 1 {
 		runDomainDoctorChecks(ctx, report, canonicalDomain(args[0]))
+	} else if len(args) == 0 {
+		runGlobalDoctorChecks(ctx, report)
 	}
 
 	report.Print()

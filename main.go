@@ -45,6 +45,10 @@ func main() {
 	aliasCmd.AddCommand(aliasAddCmd)
 	aliasCmd.AddCommand(aliasListCmd)
 	aliasCmd.AddCommand(aliasDeleteCmd)
+
+	doctorCmd.Flags().StringVar(&runtime, "runtime", "", "Override container runtime (podman or docker)")
+	rootCmd.AddCommand(doctorCmd)
+
 	rootCmd.AddCommand(aliasCmd)
 
 	rootCmd.AddCommand(migrateDomainsCmd)
